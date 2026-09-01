@@ -1,1350 +1,180 @@
-const $ = (selector) =>
-  document.querySelector(selector);
+(() => {
+"use strict";
 
-
-/* =========================
-   STATE
-========================= */
-
-const state = {
-  places: [],
-  track: [],
-  lastPosition: null,
-  watchId: null,
-  heading: 0
+const $ = id => document.getElementById(id);
+const toast = msg => {
+  $("toast").textContent = msg;
+  $("toast").classList.add("show");
+  clearTimeout(window.__t);
+  window.__t = setTimeout(() => $("toast").classList.remove("show"), 2400);
 };
 
+const map = L.map("map",{zoomControl:false,preferCanvas:true}).setView([31.68,6.07],8);
+const layers = {
+  standard:L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19,attribution:"© OpenStreetMap contributors"}),
+  satellite:L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",{maxZoom:19,attribution:"© Esri"}),
+  terrain:L.tileLayer("https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png",{maxZoom:17,attribution:"© OpenTopoMap"})
+};
+let activeLayer=layers.standard; activeLayer.addTo(map);
 
-/* =========================
-   ICONS
-========================= */
+document.querySelectorAll(".map-tools button[data-layer]").forEach(btn => btn.onclick=()=>{
+  const layer=layers[btn.dataset.layer];
+  if(layer===activeLayer)return;
+  map.removeLayer(activeLayer); layer.addTo(map); activeLayer=layer;
+  document.querySelectorAll(".map-tools button").forEach(b=>b.classList.remove("active"));
+  btn.classList.add("active");
+});
 
-const icons = {
-  well: "💧",
-  road: "🛣️",
-  camp: "⛺",
-  danger: "⚠️",
-  other: "📍"
+const places=[
+ {name:"حاسي مسعود",type:"مدينة",lat:31.6800,lon:6.0700,icon:"🏙️"},
+ {name:"ورقلة",type:"مدينة",lat:31.9500,lon:5.3300,icon:"🏙️"},
+ {name:"تقرت",type:"مدينة",lat:33.1000,lon:6.0600,icon:"🏙️"},
+ {name:"إليزي",type:"مدينة",lat:26.5000,lon:8.4700,icon:"🏜️"},
+ {name:"عين أميناس",type:"مدينة",lat:28.0500,lon:9.5500,icon:"🏜️"},
+ {name:"تمنراست",type:"مدينة",lat:22.7900,lon:5.5200,icon:"🏔️"},
+ {name:"أدرار",type:"مدينة",lat:27.8700,lon:-0.2800,icon:"🏜️"},
+ {name:"بشار",type:"مدينة",lat:31.6200,lon:-2.2200,icon:"🏜️"},
+ {name:"جانيت",type:"مدينة",lat:24.5550,lon:9.4840,icon:"🏜️"},
+ {name:"غرداية",type:"واحة / مدينة",lat:32.4900,lon:3.6700,icon:"🌴"},
+ {name:"تيميمون",type:"واحة",lat:29.2600,lon:0.2300,icon:"🌴"},
+ {name:"تاغيت",type:"واحة / كثبان",lat:30.9200,lon:-2.0300,icon:"🏜️"}
+];
+
+const markers=[];
+places.forEach(p=>{
+  const m=L.marker([p.lat,p.lon]).addTo(map).bindPopup(`<b>${p.icon} ${p.name}</b><br><small>${p.type}</small>`);
+  m.on("click",()=>setDestination(p));
+  markers.push({p,m});
+});
+
+let current=null,userMarker=null,accuracyCircle=null,watchId=null;
+let destination=null,tracking=false,track=[],trackLine=null;
+
+function startGPS(){
+  if(!navigator.geolocation){toast("GPS غير مدعوم في هذا الجهاز");return}
+  if(watchId!==null)return;
+  $("gpsStatus").textContent="● GPS...";
+  watchId=navigator.geolocation.watchPosition(pos=>{
+    const c=pos.coords;
+    current={lat:c.latitude,lon:c.longitude,accuracy:c.accuracy||0,altitude:c.altitude,speed:c.speed||0,heading:c.heading};
+    $("gpsStatus").textContent="● GPS ACTIVE"; $("gpsStatus").classList.add("on");
+    $("coords").textContent=`${current.lat.toFixed(6)}, ${current.lon.toFixed(6)}`;
+    $("accuracy").textContent=`±${Math.round(current.accuracy)}م`;
+    $("speed").textContent=(current.speed*3.6).toFixed(1);
+    $("altitude").textContent=Number.isFinite(current.altitude)?Math.round(current.altitude):"—";
+    const ll=[current.lat,current.lon];
+    if(!userMarker){
+      userMarker=L.circleMarker(ll,{radius:8,color:"#fff",weight:3,fillColor:"#1976d2",fillOpacity:1}).addTo(map);
+      accuracyCircle=L.circle(ll,{radius:current.accuracy,color:"#1976d2",weight:1,fillOpacity:.08}).addTo(map);
+    }else{userMarker.setLatLng(ll);accuracyCircle.setLatLng(ll);accuracyCircle.setRadius(current.accuracy)}
+    if(tracking)addTrackPoint(current);
+    updateDestination();
+  },err=>{
+    $("gpsStatus").textContent="● GPS ERROR"; $("gpsStatus").classList.remove("on");
+    toast("تعذر تحديد الموقع. فعّل GPS والسماح بالموقع.");
+  },{enableHighAccuracy:true,maximumAge:1500,timeout:15000});
+}
+$("locateBtn").onclick=()=>{startGPS();if(current)map.setView([current.lat,current.lon],16)};
+startGPS();
+
+function distance(a,b){
+ const R=6371,rad=Math.PI/180,dLat=(b.lat-a.lat)*rad,dLon=(b.lon-a.lon)*rad;
+ const x=Math.sin(dLat/2)**2+Math.cos(a.lat*rad)*Math.cos(b.lat*rad)*Math.sin(dLon/2)**2;
+ return R*2*Math.atan2(Math.sqrt(x),Math.sqrt(1-x));
+}
+function bearing(a,b){
+ const p1=a.lat*Math.PI/180,p2=b.lat*Math.PI/180,dl=(b.lon-a.lon)*Math.PI/180;
+ const y=Math.sin(dl)*Math.cos(p2),x=Math.cos(p1)*Math.sin(p2)-Math.sin(p1)*Math.cos(p2)*Math.cos(dl);
+ return (Math.atan2(y,x)*180/Math.PI+360)%360;
+}
+function setDestination(p){
+ destination=p;$("destination").classList.remove("hidden");$("destName").textContent=p.name;map.setView([p.lat,p.lon],13);updateDestination();
+}
+function updateDestination(){
+ if(!destination||!current)return;
+ $("destDistance").textContent=distance(current,destination).toFixed(1)+" كم";
+ $("destBearing").textContent=Math.round(bearing(current,destination))+"°";
+}
+$("clearDest").onclick=()=>{destination=null;$("destination").classList.add("hidden")};
+
+function addTrackPoint(p){
+ const q={lat:p.lat,lon:p.lon},last=track[track.length-1];
+ if(last && distance(last,q)<.005)return;
+ track.push(q);
+ if(!trackLine)trackLine=L.polyline(track.map(x=>[x.lat,x.lon]),{color:"#d49a3c",weight:5}).addTo(map);
+ else trackLine.setLatLngs(track.map(x=>[x.lat,x.lon]));
+ let d=0;for(let i=1;i<track.length;i++)d+=distance(track[i-1],track[i]);
+ $("distance").textContent=d.toFixed(2);
+}
+$("trackBtn").onclick=()=>{
+ tracking=!tracking;
+ if(tracking){startGPS();$("trackBtn").textContent="⏹️ إيقاف الرحلة";$("trackBtn").classList.remove("primary");toast("بدأ تسجيل الرحلة");}
+ else{$("trackBtn").textContent="▶️ ابدأ الرحلة";$("trackBtn").classList.add("primary");toast("تم إيقاف الرحلة");}
 };
 
+async function search(){
+ const q=$("searchInput").value.trim(); if(!q)return;
+ const local=markers.find(x=>x.p.name.includes(q));
+ if(local){map.setView([local.p.lat,local.p.lon],13);local.m.openPopup();setDestination(local.p);return}
+ try{
+  const r=await fetch("https://nominatim.openstreetmap.org/search?format=json&accept-language=ar&q="+encodeURIComponent(q));
+  const data=await r.json(); if(!data.length){toast("لم يتم العثور على المكان");return}
+  const x=data[0],p={name:x.display_name,lat:Number(x.lat),lon:Number(x.lon)};
+  map.setView([p.lat,p.lon],13);L.marker([p.lat,p.lon]).addTo(map).bindPopup(`<b>${p.name}</b>`).openPopup();setDestination(p);
+ }catch(e){toast("البحث يحتاج إلى الإنترنت")}
+}
+$("searchBtn").onclick=search;$("searchInput").onkeydown=e=>{if(e.key==="Enter")search()};
 
-/* =========================
-   STORAGE
-========================= */
+function openSheet(title,html){
+ $("sheetTitle").textContent=title;$("sheetBody").innerHTML=html;$("sheet").classList.add("show");
+}
+function closeSheet(){$("sheet").classList.remove("show")}
+$("closeSheet").onclick=closeSheet;$("sheet").onclick=e=>{if(e.target.id==="sheet")closeSheet()};
 
-function saveData() {
+const openMap={
+ places:()=>openSheet("🏜️ الأماكن",places.map(p=>`<div class="item" data-lat="${p.lat}" data-lon="${p.lon}"><div class="ico">${p.icon}</div><div class="info"><b>${p.name}</b><small>${p.type}</small></div><span class="tag">عرض</span></div>`).join("")),
+ water:()=>openSheet("💧 المياه والآبار",`
+ <div class="item"><div class="ico">💧</div><div class="info"><b>قاعدة المياه</b><small>سيتم ربط الآبار الموثقة بقاعدة بيانات المنصة.</small></div><span class="tag">V1</span></div>
+ <div class="item"><div class="ico">🟢</div><div class="info"><b>نظام الثقة</b><small>آخر تحديث + صورة + تأكيد المستخدمين قبل اعتبار المصدر موثوقًا.</small></div></div>`),
+ trips:()=>openSheet("🚙 الرحلات",`<div class="item"><div class="ico">🧭</div><div class="info"><b>تسجيل الرحلة</b><small>GPS + المسافة + السرعة + المسار. دعم GPX سيكون في المرحلة التالية.</small></div></div>`),
+ community:()=>openSheet("👥 المجتمع",`<div class="item"><div class="ico">📍</div><div class="info"><b>ساهم بمعلومة</b><small>أضف بئرًا أو طريقًا أو مكانًا أو تحذيرًا. النشر النهائي بعد التحقق.</small></div></div>`),
+ points:()=>{
+   const a=JSON.parse(localStorage.getItem("sahara_points")||"[]");
+   openSheet("📌 نقاطي",a.length?a.map(p=>`<div class="item"><div class="ico">📌</div><div class="info"><b>${p.name}</b><small>${p.lat.toFixed(6)}, ${p.lon.toFixed(6)}</small></div></div>`).join(""):`<p style="color:#83949b;font-size:10px">لا توجد نقاط محفوظة.</p>`);
+ },
+ support:()=>openSheet("💛 ادعم المشروع",`<div class="support"><div class="heart">💛</div><h3>ساعدنا على تطوير SAHARA GUIDE DZ</h3><p>مساهمتك تساعد في تطوير الخرائط، قاعدة المياه، GPS، السلامة والبيانات المحلية للصحراء الجزائرية.</p><button id="supportBtn">💛 أريد دعم المشروع</button><p>وسائل الدفع سيتم تفعيلها لاحقًا: BaridiMob / CCP / دفع إلكتروني.</p></div>`),
+ settings:()=>openSheet("⚙️ الإعدادات",`<div class="setting"><span>📡 GPS عالي الدقة</span><button>ACTIVE</button></div><div class="setting"><span>💾 تخزين النقاط</span><button>LOCAL</button></div><button id="saveCurrent" style="width:100%;margin-top:12px;height:40px;border-radius:10px;border:1px solid #e2b34e;background:#d9aa4b;font-weight:900">📌 حفظ موقعي الحالي</button>`)
+};
 
-  localStorage.setItem(
-    "sahara_places",
-    JSON.stringify(state.places)
-  );
+document.querySelectorAll("[data-open]").forEach(b=>b.onclick=()=>{const fn=openMap[b.dataset.open];if(fn)fn()});
+document.querySelectorAll("[data-open]").forEach(b=>b.addEventListener("click",()=>setTimeout(bindSheetActions,0)));
 
-  localStorage.setItem(
-    "sahara_track",
-    JSON.stringify(state.track)
-  );
+function bindSheetActions(){
+ document.querySelectorAll(".item[data-lat]").forEach(el=>el.onclick=()=>{map.setView([Number(el.dataset.lat),Number(el.dataset.lon)],14);closeSheet()});
+ const s=$("supportBtn");if(s)s.onclick=()=>toast("سيتم تفعيل وسائل الدعم عند ربط الحسابات");
+ const save=$("saveCurrent");if(save)save.onclick=savePoint;
+}
+$("saveCurrent")?.addEventListener("click",savePoint);
+
+function savePoint(){
+ if(!current){startGPS();toast("جاري تحديد موقعك...");return}
+ const name=prompt("اسم النقطة:");if(!name)return;
+ const a=JSON.parse(localStorage.getItem("sahara_points")||"[]");
+ a.push({name,lat:current.lat,lon:current.lon,date:new Date().toISOString()});
+ localStorage.setItem("sahara_points",JSON.stringify(a));
+ L.marker([current.lat,current.lon]).addTo(map).bindPopup("📌 "+name);
+ toast("تم حفظ النقطة");
+ closeSheet();
 }
 
-
-function loadData() {
-
-  try {
-
-    state.places =
-      JSON.parse(
-        localStorage.getItem("sahara_places")
-      ) || [];
-
-  } catch {
-
-    state.places = [];
-
-  }
-
-
-  try {
-
-    state.track =
-      JSON.parse(
-        localStorage.getItem("sahara_track")
-      ) || [];
-
-  } catch {
-
-    state.track = [];
-
-  }
-
-}
-
-
-/* =========================
-   DISTANCE
-========================= */
-
-function distanceKm(a, b) {
-
-  const R = 6371;
-
-  const rad = Math.PI / 180;
-
-  const dLat =
-    (b.lat - a.lat) * rad;
-
-  const dLon =
-    (b.lon - a.lon) * rad;
-
-  const x =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(a.lat * rad) *
-    Math.cos(b.lat * rad) *
-    Math.sin(dLon / 2) ** 2;
-
-  return (
-    R *
-    2 *
-    Math.atan2(
-      Math.sqrt(x),
-      Math.sqrt(1 - x)
-    )
-  );
-}
-
-
-function totalTrackDistance() {
-
-  let total = 0;
-
-  for (
-    let i = 1;
-    i < state.track.length;
-    i++
-  ) {
-
-    total += distanceKm(
-      state.track[i - 1],
-      state.track[i]
-    );
-
-  }
-
-  return total;
-
-}
-
-
-/* =========================
-   SECURITY
-========================= */
-
-function escapeHTML(value) {
-
-  return String(value)
-    .replace(
-      /[&<>"']/g,
-      char => ({
-        "&": "&amp;",
-        "<": "&lt;",
-        ">": "&gt;",
-        '"': "&quot;",
-        "'": "&#039;"
-      })[char]
-    );
-
-}
-
-
-/* =========================
-   RENDER PLACES
-========================= */
-
-function renderPlaces() {
-
-  const container =
-    $("#placesList");
-
-  if (!state.places.length) {
-
-    container.innerHTML =
-      `<div class="hint">
-        لا توجد نقاط محفوظة.
-      </div>`;
-
-  } else {
-
-    container.innerHTML =
-      state.places
-        .map(place => {
-
-          return `
-            <div class="place">
-
-              <div class="emoji">
-                ${icons[place.type] || "📍"}
-              </div>
-
-              <div class="place-info">
-
-                <strong>
-                  ${escapeHTML(place.name)}
-                </strong>
-
-                <small>
-                  ${escapeHTML(
-                    place.note || "بدون ملاحظة"
-                  )}
-                </small>
-
-                <small>
-                  ${place.lat.toFixed(6)},
-                  ${place.lon.toFixed(6)}
-                </small>
-
-              </div>
-
-              <button
-                onclick="openPoint('${place.id}')"
-              >
-                عرض
-              </button>
-
-            </div>
-          `;
-
-        })
-        .join("");
-
-  }
-
-  $("#pointsValue").textContent =
-    state.places.length;
-
-}
-
-
-/* =========================
-   STATS
-========================= */
-
-function updateStats() {
-
-  $("#distanceValue").textContent =
-    totalTrackDistance().toFixed(2);
-
-  $("#pointsValue").textContent =
-    state.places.length;
-
-
-  if (state.lastPosition) {
-
-    $("#accuracyValue").textContent =
-      Math.round(
-        state.lastPosition.accuracy || 0
-      ) + "م";
-
-  }
-
-}
-
-
-/* =========================
-   MAP
-========================= */
-
-function getBounds() {
-
-  let all = [
-    ...state.places,
-    ...state.track
-  ];
-
-  if (state.lastPosition) {
-    all.push(state.lastPosition);
-  }
-
-
-  if (!all.length) {
-
-    return {
-      minLat: 31.50,
-      maxLat: 31.85,
-      minLon: 5.85,
-      maxLon: 6.35
-    };
-
-  }
-
-
-  const lats =
-    all.map(p => p.lat);
-
-  const lons =
-    all.map(p => p.lon);
-
-
-  let minLat =
-    Math.min(...lats);
-
-  let maxLat =
-    Math.max(...lats);
-
-  let minLon =
-    Math.min(...lons);
-
-  let maxLon =
-    Math.max(...lons);
-
-
-  const padding =
-    Math.max(
-      maxLat - minLat,
-      maxLon - minLon,
-      .05
-    ) * .25;
-
-
-  return {
-    minLat: minLat - padding,
-    maxLat: maxLat + padding,
-    minLon: minLon - padding,
-    maxLon: maxLon + padding
-  };
-
-}
-
-
-function project(
-  lat,
-  lon,
-  width,
-  height,
-  bounds
-) {
-
-  const x =
-    (
-      (lon - bounds.minLon) /
-      (bounds.maxLon - bounds.minLon)
-    ) * width;
-
-
-  const y =
-    (
-      (bounds.maxLat - lat) /
-      (bounds.maxLat - bounds.minLat)
-    ) * height;
-
-
-  return [x, y];
-
-}
-
-
-function drawMap() {
-
-  const map =
-    $("#map");
-
-  let canvas =
-    map.querySelector("canvas");
-
-
-  if (!canvas) {
-
-    canvas =
-      document.createElement("canvas");
-
-    map.appendChild(canvas);
-
-  }
-
-
-  const rect =
-    map.getBoundingClientRect();
-
-  const ratio =
-    window.devicePixelRatio || 1;
-
-
-  canvas.width =
-    rect.width * ratio;
-
-  canvas.height =
-    rect.height * ratio;
-
-
-  const ctx =
-    canvas.getContext("2d");
-
-
-  ctx.setTransform(
-    ratio,
-    0,
-    0,
-    ratio,
-    0,
-    0
-  );
-
-
-  const width =
-    rect.width;
-
-  const height =
-    rect.height;
-
-
-  const bounds =
-    getBounds();
-
-
-  /* Desert */
-
-  ctx.fillStyle =
-    "#d7c59d";
-
-  ctx.fillRect(
-    0,
-    0,
-    width,
-    height
-  );
-
-
-  /* Grid */
-
-  ctx.strokeStyle =
-    "rgba(80,65,40,.18)";
-
-  ctx.lineWidth = 1;
-
-
-  for (
-    let x = 0;
-    x < width;
-    x += 45
-  ) {
-
-    ctx.beginPath();
-
-    ctx.moveTo(x, 0);
-
-    ctx.lineTo(x, height);
-
-    ctx.stroke();
-
-  }
-
-
-  for (
-    let y = 0;
-    y < height;
-    y += 45
-  ) {
-
-    ctx.beginPath();
-
-    ctx.moveTo(0, y);
-
-    ctx.lineTo(width, y);
-
-    ctx.stroke();
-
-  }
-
-
-  /* Track */
-
-  if (state.track.length > 1) {
-
-    ctx.strokeStyle =
-      "#9b5b25";
-
-    ctx.lineWidth = 4;
-
-    ctx.beginPath();
-
-
-    state.track.forEach(
-      (point, index) => {
-
-        const [
-          x,
-          y
-        ] =
-          project(
-            point.lat,
-            point.lon,
-            width,
-            height,
-            bounds
-          );
-
-
-        if (index === 0) {
-
-          ctx.moveTo(x, y);
-
-        } else {
-
-          ctx.lineTo(x, y);
-
-        }
-
-      }
-    );
-
-
-    ctx.stroke();
-
-  }
-
-
-  /* Places */
-
-  state.places.forEach(place => {
-
-    const [
-      x,
-      y
-    ] =
-      project(
-        place.lat,
-        place.lon,
-        width,
-        height,
-        bounds
-      );
-
-
-    if (place.type === "well") {
-
-      ctx.fillStyle =
-        "#168ba8";
-
-    } else if (
-      place.type === "danger"
-    ) {
-
-      ctx.fillStyle =
-        "#b43b42";
-
-    } else {
-
-      ctx.fillStyle =
-        "#63482d";
-
-    }
-
-
-    ctx.beginPath();
-
-    ctx.arc(
-      x,
-      y,
-      7,
-      0,
-      Math.PI * 2
-    );
-
-    ctx.fill();
-
-
-    ctx.font =
-      "12px system-ui";
-
-    ctx.textAlign =
-      "center";
-
-    ctx.fillStyle =
-      "#172027";
-
-    ctx.fillText(
-      icons[place.type] || "📍",
-      x,
-      y - 11
-    );
-
-  });
-
-
-  /* Current location */
-
-  if (state.lastPosition) {
-
-    const [
-      x,
-      y
-    ] =
-      project(
-        state.lastPosition.lat,
-        state.lastPosition.lon,
-        width,
-        height,
-        bounds
-      );
-
-
-    ctx.fillStyle =
-      "#1768bd";
-
-    ctx.beginPath();
-
-    ctx.arc(
-      x,
-      y,
-      8,
-      0,
-      Math.PI * 2
-    );
-
-    ctx.fill();
-
-
-    ctx.strokeStyle =
-      "#fff";
-
-    ctx.lineWidth = 3;
-
-    ctx.stroke();
-
-  }
-
-}
-
-
-/* =========================
-   GPS
-========================= */
-
-function locateUser() {
-
-  if (!navigator.geolocation) {
-
-    alert(
-      "هذا الهاتف أو المتصفح لا يدعم GPS."
-    );
-
-    return;
-
-  }
-
-
-  $("#mapInfo").textContent =
-    "جاري تحديد موقعك…";
-
-
-  navigator.geolocation.getCurrentPosition(
-    handlePosition,
-    handleLocationError,
-    {
-      enableHighAccuracy: true,
-      timeout: 15000,
-      maximumAge: 3000
-    }
-  );
-
-}
-
-
-function handlePosition(position) {
-
-  const newPosition = {
-
-    lat:
-      position.coords.latitude,
-
-    lon:
-      position.coords.longitude,
-
-    accuracy:
-      position.coords.accuracy || 0,
-
-    speed:
-      position.coords.speed || 0,
-
-    time:
-      Date.now()
-
-  };
-
-
-  if (
-    state.lastPosition &&
-    $("#trackingToggle").checked
-  ) {
-
-    const movement =
-      distanceKm(
-        state.lastPosition,
-        newPosition
-      );
-
-
-    if (movement > 0.005) {
-
-      state.track.push(
-        newPosition
-      );
-
-    }
-
-  }
-
-
-  state.lastPosition =
-    newPosition;
-
-
-  $("#accuracyValue").textContent =
-    Math.round(
-      newPosition.accuracy
-    ) + "م";
-
-
-  $("#speedValue").textContent =
-    (
-      (newPosition.speed || 0) * 3.6
-    ).toFixed(1);
-
-
-  $("#mapInfo").textContent =
-    `${newPosition.lat.toFixed(6)}, ${newPosition.lon.toFixed(6)}`;
-
-
-  saveData();
-
-  renderPlaces();
-
-  updateStats();
-
-  drawMap();
-
-}
-
-
-function handleLocationError(error) {
-
-  $("#mapInfo").textContent =
-    "تعذر تحديد الموقع: " +
-    error.message;
-
-}
-
-
-function startTracking() {
-
-  if (
-    state.watchId !== null ||
-    !navigator.geolocation
-  ) {
-    return;
-  }
-
-
-  state.watchId =
-    navigator.geolocation.watchPosition(
-      handlePosition,
-      () => {},
-      {
-        enableHighAccuracy: true,
-        maximumAge: 3000,
-        timeout: 10000
-      }
-    );
-
-}
-
-
-/* =========================
-   SAVE CURRENT LOCATION
-========================= */
-
-function prepareCurrentPoint() {
-
-  if (!state.lastPosition) {
-
-    locateUser();
-
-    alert(
-      "حدد موقعك أولاً، ثم اضغط حفظ موقعي."
-    );
-
-    return;
-
-  }
-
-
-  $("#latInput").value =
-    state.lastPosition.lat.toFixed(6);
-
-  $("#lonInput").value =
-    state.lastPosition.lon.toFixed(6);
-
-  $("#pointName").focus();
-
-}
-
-
-/* =========================
-   OPEN POINT
-========================= */
-
-window.openPoint =
-  function(id) {
-
-    const place =
-      state.places.find(
-        item => item.id === id
-      );
-
-
-    if (!place) {
-      return;
-    }
-
-
-    const url =
-      `https://www.google.com/maps/search/?api=1&query=${place.lat},${place.lon}`;
-
-
-    if (navigator.onLine) {
-
-      window.open(
-        url,
-        "_blank"
-      );
-
-    } else {
-
-      alert(
-        `${place.name}\n\n` +
-        `${place.lat}, ${place.lon}`
-      );
-
-    }
-
-  };
-
-
-/* =========================
-   EXPORT
-========================= */
-
-function exportData() {
-
-  const data = {
-
-    app:
-      "SAHARA GUIDE DZ",
-
-    version:
-      "V1",
-
-    exportedAt:
-      new Date().toISOString(),
-
-    places:
-      state.places,
-
-    track:
-      state.track
-
-  };
-
-
-  const blob =
-    new Blob(
-      [
-        JSON.stringify(
-          data,
-          null,
-          2
-        )
-      ],
-      {
-        type:
-          "application/json"
-      }
-    );
-
-
-  const url =
-    URL.createObjectURL(blob);
-
-
-  const link =
-    document.createElement("a");
-
-  link.href = url;
-
-  link.download =
-    "sahara-guide-dz-backup.json";
-
-  link.click();
-
-
-  URL.revokeObjectURL(url);
-
-}
-
-
-/* =========================
-   COMPASS
-========================= */
-
-async function enableCompass() {
-
-  try {
-
-    if (
-      typeof DeviceOrientationEvent !==
-      "undefined" &&
-      typeof DeviceOrientationEvent.requestPermission ===
-      "function"
-    ) {
-
-      const permission =
-        await DeviceOrientationEvent
-          .requestPermission();
-
-
-      if (
-        permission !== "granted"
-      ) {
-
-        alert(
-          "لم يتم السماح باستخدام البوصلة."
-        );
-
-        return;
-
-      }
-
-    }
-
-
-    window.addEventListener(
-      "deviceorientationabsolute",
-      handleOrientation,
-      {
-        passive: true
-      }
-    );
-
-
-    window.addEventListener(
-      "deviceorientation",
-      handleOrientation,
-      {
-        passive: true
-      }
-    );
-
-
-    $("#mapInfo").textContent =
-      "البوصلة مفعلة.";
-
-  } catch {
-
-    alert(
-      "تعذر تفعيل البوصلة في هذا المتصفح."
-    );
-
-  }
-
-}
-
-
-function handleOrientation(event) {
-
-  let heading;
-
-
-  if (
-    typeof event.webkitCompassHeading ===
-    "number"
-  ) {
-
-    heading =
-      event.webkitCompassHeading;
-
-  } else {
-
-    heading =
-      (
-        360 -
-        (event.alpha || 0)
-      ) % 360;
-
-  }
-
-
-  if (
-    !Number.isFinite(heading)
-  ) {
-    return;
-  }
-
-
-  state.heading =
-    heading;
-
-
-  $("#headingText").textContent =
-    Math.round(heading) + "°";
-
-
-  $("#compassDegree").textContent =
-    Math.round(heading) + "°";
-
-
-  $("#compass").style.transform =
-    `rotate(${-heading}deg)`;
-
-}
-
-
-/* =========================
-   ONLINE STATUS
-========================= */
-
-function updateOnlineStatus() {
-
-  if (navigator.onLine) {
-
-    $("#onlineStatus").textContent =
-      "● متصل";
-
-    $("#onlineStatus").style.color =
-      "#7cdda4";
-
-  } else {
-
-    $("#onlineStatus").textContent =
-      "● بدون إنترنت";
-
-    $("#onlineStatus").style.color =
-      "#efc45d";
-
-  }
-
-}
-
-
-/* =========================
-   EVENTS
-========================= */
-
-$("#locateBtn").onclick =
-  function() {
-
-    locateUser();
-
-    startTracking();
-
-  };
-
-
-$("#trackNav").onclick =
-  function() {
-
-    locateUser();
-
-    startTracking();
-
-  };
-
-
-$("#saveCurrentBtn").onclick =
-  prepareCurrentPoint;
-
-
-$("#placesNav").onclick =
-  function() {
-
-    $("#placesList").scrollIntoView({
-      behavior: "smooth"
-    });
-
-  };
-
-
-$("#compassBtn").onclick =
-  enableCompass;
-
-
-$("#clearTrackBtn").onclick =
-  function() {
-
-    if (
-      confirm(
-        "هل تريد مسح مسار المشي؟"
-      )
-    ) {
-
-      state.track = [];
-
-      saveData();
-
-      updateStats();
-
-      drawMap();
-
-    }
-
-  };
-
-
-$("#pointForm").onsubmit =
-  function(event) {
-
-    event.preventDefault();
-
-
-    const name =
-      $("#pointName").value.trim();
-
-    const lat =
-      Number(
-        $("#latInput").value
-      );
-
-    const lon =
-      Number(
-        $("#lonInput").value
-      );
-
-
-    if (
-      !name ||
-      !Number.isFinite(lat) ||
-      !Number.isFinite(lon) ||
-      Math.abs(lat) > 90 ||
-      Math.abs(lon) > 180
-    ) {
-
-      alert(
-        "أدخل اسمًا وإحداثيات صحيحة."
-      );
-
-      return;
-
-    }
-
-
-    state.places.push({
-
-      id:
-        "point-" +
-        Date.now(),
-
-      name,
-
-      type:
-        $("#pointType").value,
-
-      note:
-        $("#pointNote").value.trim(),
-
-      lat,
-
-      lon
-
-    });
-
-
-    saveData();
-
-    event.target.reset();
-
-    renderPlaces();
-
-    updateStats();
-
-    drawMap();
-
-
-    alert(
-      "تم حفظ النقطة على جهازك."
-    );
-
-  };
-
-
-$("#trackingToggle").onchange =
-  function(event) {
-
-    if (
-      event.target.checked
-    ) {
-
-      startTracking();
-
-    }
-
-  };
-
-
-$("#deleteDataBtn").onclick =
-  function() {
-
-    if (
-      !confirm(
-        "سيتم حذف جميع النقاط والمسار المحفوظين. متابعة؟"
-      )
-    ) {
-
-      return;
-
-    }
-
-
-    state.places = [];
-
-    state.track = [];
-
-    state.lastPosition = null;
-
-
-    localStorage.removeItem(
-      "sahara_places"
-    );
-
-    localStorage.removeItem(
-      "sahara_track"
-    );
-
-
-    renderPlaces();
-
-    updateStats();
-
-    drawMap();
-
-  };
-
-
-$("#exportBtn").onclick =
-  exportData;
-
-
-$("#settingsNav").onclick =
-  function() {
-
-    $("#settingsDialog").showModal();
-
-  };
-
-
-/* =========================
-   PWA INSTALL
-========================= */
-
-let deferredInstallPrompt =
-  null;
-
-
-window.addEventListener(
-  "beforeinstallprompt",
-  event => {
-
-    event.preventDefault();
-
-    deferredInstallPrompt =
-      event;
-
-    $("#installBtn")
-      .classList
-      .remove("hidden");
-
-  }
-);
-
-
-$("#installBtn").onclick =
-  async function() {
-
-    if (
-      !deferredInstallPrompt
-    ) {
-      return;
-    }
-
-
-    deferredInstallPrompt.prompt();
-
-
-    await deferredInstallPrompt.userChoice;
-
-
-    deferredInstallPrompt =
-      null;
-
-
-    $("#installBtn")
-      .classList
-      .add("hidden");
-
-  };
-
-
-/* =========================
-   SERVICE WORKER
-========================= */
-
-if (
-  "serviceWorker" in navigator
-) {
-
-  window.addEventListener(
-    "load",
-    () => {
-
-      navigator.serviceWorker
-        .register(
-          "service-worker.js"
-        )
-        .catch(
-          error =>
-            console.error(
-              "Service Worker:",
-              error
-            )
-        );
-
-    }
-  );
-
-}
-
-
-/* =========================
-   INIT
-========================= */
-
-window.addEventListener(
-  "resize",
-  drawMap
-);
-
-window.addEventListener(
-  "online",
-  updateOnlineStatus
-);
-
-window.addEventListener(
-  "offline",
-  updateOnlineStatus
-);
-
-
-loadData();
-
-renderPlaces();
-
-updateStats();
-
-drawMap();
-
-updateOnlineStatus();
+$("sosBtn").onclick=async()=>{
+ if(!current){startGPS();toast("جاري تحديد موقعك...");return}
+ const text=`🆘 SAHARA GUIDE DZ - SOS\n📍 ${current.lat.toFixed(6)}, ${current.lon.toFixed(6)}\n📡 دقة GPS: ±${Math.round(current.accuracy)}م\n🕐 ${new Date().toLocaleString("ar-DZ")}`;
+ try{
+  if(navigator.share)await navigator.share({title:"SOS - SAHARA GUIDE DZ",text});
+  else{await navigator.clipboard.writeText(text);toast("تم نسخ رسالة الطوارئ")}
+ }catch(e){}
+};
+
+if("serviceWorker" in navigator)window.addEventListener("load",()=>navigator.serviceWorker.register("./service-worker.js").catch(()=>{}));
+})();
