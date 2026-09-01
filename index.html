@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#101820">
+  <meta name="description" content="SAHARA GUIDE DZ V1 - دليل الصحراء الجزائري">
+  <link rel="manifest" href="manifest.json">
+  <link rel="stylesheet" href="style.css">
+  <title>SAHARA GUIDE DZ</title>
+</head>
+
+<body>
+
+<header class="topbar">
+  <div>
+    <div class="brand">SAHARA GUIDE <span>DZ</span></div>
+    <div class="subtitle">دليل الصحراء الجزائري • V1</div>
+  </div>
+
+  <button id="installBtn" class="icon-btn hidden">⬇️</button>
+</header>
+
+<main>
+
+  <section class="hero">
+    <div>
+      <h1>دليلك في الصحراء</h1>
+      <p>الآبار • الطرقات • النقاط • مسار المشي • GPS</p>
+    </div>
+
+    <div id="onlineStatus" class="status">
+      ● متصل
+    </div>
+  </section>
+
+  <section class="card">
+
+    <div class="toolbar">
+      <button id="locateBtn" class="primary">
+        📍 موقعي
+      </button>
+
+      <button id="compassBtn">
+        🧭 البوصلة
+      </button>
+
+      <button id="saveCurrentBtn">
+        ＋ حفظ موقعي
+      </button>
+
+      <button id="clearTrackBtn" class="danger">
+        مسح المسار
+      </button>
+    </div>
+
+    <div id="map" class="map">
+      <canvas></canvas>
+    </div>
+
+    <div id="mapInfo" class="map-info">
+      الخريطة المحلية تعمل بدون إنترنت.
+    </div>
+
+  </section>
+
+
+  <section class="stats">
+
+    <div class="stat">
+      <b id="distanceValue">0.00</b>
+      <small>كم المسار</small>
+    </div>
+
+    <div class="stat">
+      <b id="speedValue">0.0</b>
+      <small>كم/س</small>
+    </div>
+
+    <div class="stat">
+      <b id="pointsValue">0</b>
+      <small>النقاط</small>
+    </div>
+
+    <div class="stat">
+      <b id="accuracyValue">—</b>
+      <small>دقة GPS</small>
+    </div>
+
+  </section>
+
+
+  <section class="card">
+
+    <div class="section-head">
+      <h2>📌 نقاطي</h2>
+
+      <button id="exportBtn" class="small-btn">
+        تصدير
+      </button>
+    </div>
+
+    <div id="placesList"></div>
+
+  </section>
+
+
+  <section class="card">
+
+    <h2>➕ إضافة نقطة صحراوية</h2>
+
+    <form id="pointForm">
+
+      <input
+        id="pointName"
+        type="text"
+        required
+        maxlength="60"
+        placeholder="اسم النقطة"
+      >
+
+      <select id="pointType">
+
+        <option value="well">
+          💧 بئر / ماء
+        </option>
+
+        <option value="road">
+          🛣️ طريق
+        </option>
+
+        <option value="camp">
+          ⛺ مخيم
+        </option>
+
+        <option value="danger">
+          ⚠️ خطر
+        </option>
+
+        <option value="other">
+          📍 أخرى
+        </option>
+
+      </select>
+
+      <textarea
+        id="pointNote"
+        maxlength="180"
+        placeholder="ملاحظة اختيارية"
+      ></textarea>
+
+      <div class="coordinates">
+
+        <input
+          id="latInput"
+          type="number"
+          step="any"
+          placeholder="Latitude"
+        >
+
+        <input
+          id="lonInput"
+          type="number"
+          step="any"
+          placeholder="Longitude"
+        >
+
+      </div>
+
+      <button class="primary full" type="submit">
+        حفظ النقطة على الجهاز
+      </button>
+
+    </form>
+
+  </section>
+
+
+  <section class="card">
+
+    <div class="section-head">
+
+      <h2>🧭 البوصلة</h2>
+
+      <span id="headingText">
+        —°
+      </span>
+
+    </div>
+
+    <div class="compass-wrap">
+
+      <div id="compass" class="compass">
+
+        <span>N</span>
+
+        <i>▲</i>
+
+        <b id="compassDegree">
+          0°
+        </b>
+
+      </div>
+
+    </div>
+
+    <p class="hint">
+      اضغط «البوصلة» واسمح بحساسات الحركة إذا طلب الهاتف ذلك.
+    </p>
+
+  </section>
+
+
+  <section class="card warning">
+
+    <h2>⚠️ تنبيه مهم</h2>
+
+    <p>
+      هذا التطبيق أداة مساعدة وليس بديلاً عن أجهزة الملاحة
+      أو الخرائط الورقية أو تجهيزات السلامة.
+      لا تعتمد على الهاتف وحده في الرحلات الصحراوية،
+      وتأكد من الماء والوقود ووسيلة اتصال.
+    </p>
+
+  </section>
+
+</main>
+
+
+<nav class="bottom-nav">
+
+  <button class="active">
+    🗺️
+    <span>الخريطة</span>
+  </button>
+
+  <button id="placesNav">
+    📌
+    <span>النقاط</span>
+  </button>
+
+  <button id="trackNav">
+    🥾
+    <span>المشي</span>
+  </button>
+
+  <button id="settingsNav">
+    ⚙️
+    <span>الإعدادات</span>
+  </button>
+
+</nav>
+
+
+<dialog id="settingsDialog">
+
+  <form method="dialog" class="dialog-card">
+
+    <button class="close-btn">
+      ×
+    </button>
+
+    <h2>⚙️ الإعدادات</h2>
+
+    <label class="switch-row">
+
+      <span>
+        تتبع المسار تلقائيًا
+      </span>
+
+      <input
+        id="trackingToggle"
+        type="checkbox"
+      >
+
+    </label>
+
+    <button
+      id="deleteDataBtn"
+      type="button"
+      class="danger full"
+    >
+      حذف كل البيانات
+    </button>
+
+    <p class="hint">
+      SAHARA GUIDE DZ V1
+      <br>
+      بياناتك تحفظ محليًا على الجهاز.
+    </p>
+
+  </form>
+
+</dialog>
+
+
+<script src="app.js"></script>
+
+</body>
+</html>

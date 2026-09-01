@@ -1,0 +1,19 @@
+{
+  "name": "SAHARA GUIDE DZ",
+  "short_name": "SAHARA GUIDE",
+  "description": "دليل الصحراء الجزائري - آبار وطرقات ونقاط ومسار المشي",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0b1116",
+  "theme_color": "#101820",
+  "lang": "ar",
+  "dir": "rtl",
+  "categories": [
+    "navigation",
+    "travel",
+    "utilities"
+  ],
+  "icons": []
+}
